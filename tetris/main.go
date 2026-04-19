@@ -9,126 +9,241 @@ import (
 	"math/rand"
 )
 
-
 const (
-	S = 20 // Кубик
-	W = 10 // Стакан
-	H = 20 // Высота
+	S = 25 // Размер чутка побольше я слепошарый
+	W = 10 // Ширина норм
+	H = 20 // Высота годится
 )
 
-// Сегрегация фигур: массив фигур -> массив точек -> [x, y]
+// Фигуры: I, O, T, S, Z, J, L
 var shapes = [][][]int{
-	{{0, 0}, {1, 0}, {0, 1}, {1, 1}}, // Квадрат
-	{{0, 0}, {1, 0}, {2, 0}, {3, 0}}, // Палка
-	{{0, 1}, {1, 1}, {2, 1}, {1, 0}}, // Т-шка
-	{{0, 0}, {0, 1}, {1, 1}, {2, 1}}, // Г-шка
+	{{0, 0}, {1, 0}, {2, 0}, {3, 0}}, // I (Палка)
+	{{0, 0}, {1, 0}, {0, 1}, {1, 1}}, // O (Квадрат)
+	{{0, 0}, {1, 0}, {2, 0}, {1, 1}}, // T и прочая поебень
+	{{1, 0}, {2, 0}, {0, 1}, {1, 1}}, // S
+	{{0, 0}, {1, 0}, {1, 1}, {2, 1}}, // Z
+	{{0, 0}, {0, 1}, {1, 1}, {2, 1}}, // J
+	{{2, 0}, {0, 1}, {1, 1}, {2, 1}}, // L
+}
+
+// Цвета для фигур
+var colors = []color.RGBA{
+	{0, 255, 255, 255},   // I - Cyan
+	{255, 255, 0, 255},   // O - Yellow
+	{128, 0, 128, 255},   // T - Purple
+	{0, 255, 0, 255},     // S - Green
+	{255, 0, 0, 255},     // Z - Red
+	{0, 0, 255, 255},     // J - Blue
+	{255, 165, 0, 255},   // L - Orange
 }
 
 type Game struct {
-	board      [W][H]bool
+	board      [W][H]color.RGBA // Храним цвет занятой клетки
 	posX, posY int
 	timer      int
 	current    [][]int
+	currentIdx int // Индекс текущей фигуры для цвета
+	gameOver   bool
 }
 
 func (g *Game) Update() error {
+	if g.gameOver {
+		if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
+			g.reset()
+		}
+		return nil
+	}
+
 	g.timer++
-	if g.timer > 30 {
+	// Скорость падения фигур
+	speed := 40 
+	if g.timer > speed {
 		g.posY++
 		g.timer = 0
 	}
 
-	// 1. УПРАВЛЕНИЕ ВЛЕВО (Защита от Паники [-1])
+	// --- руль ---
+
+	// Влево
 	if inpututil.IsKeyJustPressed(ebiten.KeyLeft) {
-		canMove := true
-		for _, p := range g.current {
-			if g.posX+p[0] <= 0 { canMove = false; break }
-		}
-		if canMove { g.posX-- }
+		g.move(-1, 0)
 	}
-
-	// 2. УПРАВЛЕНИЕ ВПРАВО
+	// Вправо
 	if inpututil.IsKeyJustPressed(ebiten.KeyRight) {
-		canMove := true
-		for _, p := range g.current {
-			if g.posX+p[0] >= W-1 { canMove = false; break }
-		}
-		if canMove { g.posX++ }
+		g.move(1, 0)
+	}
+	// Вниз (ускорение)
+	if ebiten.IsKeyPressed(ebiten.KeyDown) {
+		g.timer += 5 // Пропускаем кадры таймера
 	}
 
-	// 3. ПОВОРОТ ФИГУРЫ (Магия ЧТЗ)
+	// Поворот
 	if inpututil.IsKeyJustPressed(ebiten.KeyUp) {
-		newShape := make([][]int, len(g.current))
-		for i, p := range g.current {
-			// Крутим: x = -y, y = x
-			newShape[i] = []int{-p[1], p[0]}
-		}
-		// Проверка: не влетаем ли в стену или в кости после поворота
-		canRotate := true
-		for _, p := range newShape {
-			nx, ny := g.posX+p[0], g.posY+p[1]
-			if nx < 0 || nx >= W || ny < 0 || ny >= H || (ny >= 0 && g.board[nx][ny]) {
-				canRotate = false; break
-			}
-		}
-		if canRotate { g.current = newShape }
+		g.rotate()
 	}
 
-	// 4. ПРИЗЕМЛЕНИЕ
-	hitBottom := false
-	for _, p := range g.current {
-		nextY := g.posY + p[1] + 1
-		if nextY >= H { hitBottom = true; break }
-		if g.posX+p[0] >= 0 && g.posX+p[0] < W && g.board[g.posX+p[0]][nextY] {
-			hitBottom = true; break
+	// --- здесь жопами толкаемся ---
+	
+	if g.checkCollision(0, 1) {
+		g.fixPiece()
+		g.clearLines()
+		g.spawnPiece()
+		
+		// Проверка на пиздец
+		if g.checkCollision(0, 0) {
+			g.gameOver = true
 		}
 	}
 
-	if hitBottom {
-		for _, p := range g.current {
-			bx, by := g.posX+p[0], g.posY+p[1]
-			if bx >= 0 && bx < W && by >= 0 && by < H { g.board[bx][by] = true }
-		}
-		// СЖИГАЕМ ЛИНИИ
-		for y := 0; y < H; y++ {
-			full := true
-			for x := 0; x < W; x++ {
-				if !g.board[x][y] { full = false; break }
-			}
-			if full {
-				for row := y; row > 0; row-- {
-					for x := 0; x < W; x++ { g.board[x][row] = g.board[x][row-1] }
-				}
-				for x := 0; x < W; x++ { g.board[x][0] = false }
-			}
-		}
-		g.posY, g.posX = 0, 4
-		g.current = shapes[rand.Intn(len(shapes))]
-	}
 	return nil
 }
 
-func (g *Game) Draw(screen *ebiten.Image) {
-	// Рисуем стакан
-	for x := 0; x < W; x++ {
-		for y := 0; y < H; y++ {
-			vector.StrokeRect(screen, float32(x*S), float32(y*S), S, S, 1, color.White, false)
-			if g.board[x][y] {
-				vector.DrawFilledRect(screen, float32(x*S), float32(y*S), S, S, color.RGBA{235, 6, 255, 255}, false)
-			}
-		}
-	}
-	// РИСУЕМ АКТИВНЫЙ СТВОЛ
-	for _, p := range g.current {
-		vector.DrawFilledRect(screen, float32((g.posX+p[0])*S), float32((g.posY+p[1])*S), S, S, color.RGBA{0, 255, 0, 255}, false)
+// Движение фигуры
+func (g *Game) move(dx, dy int) {
+	if !g.checkCollision(dx, dy) {
+		g.posX += dx
+		g.posY += dy
 	}
 }
 
-func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) { return W * S, H * S }
+// Поворот фигуры
+func (g *Game) rotate() {
+	newShape := make([][]int, len(g.current))
+	for i, p := range g.current {
+		// здесь крутим вертим
+		// x' = -y, y' = x
+		newShape[i] = []int{-p[1], p[0]}
+	}
+	
+	// щупаем есть ли место для разворота
+	// Если если нет то летим как летим
+	tempShape := g.current
+	g.current = newShape
+	
+	if g.checkCollision(0, 0) {
+		// Если задел отмена поворота
+		g.current = tempShape
+	}
+}
+
+// Проверка столкновений
+func (g *Game) checkCollision(dx, dy int) bool {
+	for _, p := range g.current {
+		nx := g.posX + p[0] + dx
+		ny := g.posY + p[1] + dy
+
+		// Выход за границы по X
+		if nx < 0 || nx >= W {
+			return true
+		}
+		// Выход за границы по Y (пол)
+		if ny >= H {
+			return true
+		}
+		// Столкновение с другой фигурой (проверяем только если ny >= 0)
+		if ny >= 0 && g.board[nx][ny].A != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// Фиксация фигуры на поле
+func (g *Game) fixPiece() {
+	c := colors[g.currentIdx]
+	for _, p := range g.current {
+		bx := g.posX + p[0]
+		by := g.posY + p[1]
+		if bx >= 0 && bx < W && by >= 0 && by < H {
+			g.board[bx][by] = c
+		}
+	}
+}
+
+// Очистка линий
+func (g *Game) clearLines() {
+	for y := H - 1; y >= 0; y-- {
+		full := true
+		for x := 0; x < W; x++ {
+			if g.board[x][y].A == 0 { // Если прозрачный, значит пустой
+				full = false
+				break
+			}
+		}
+		if full {
+			// Сдвигаем всё вниз
+			for row := y; row > 0; row-- {
+				for x := 0; x < W; x++ {
+					g.board[x][row] = g.board[x][row-1]
+				}
+			}
+			// Очищаем верхнюю строку
+			for x := 0; x < W; x++ {
+				g.board[x][0] = color.RGBA{0, 0, 0, 0}
+			}
+			y++ // Проверяем эту же строку снова, так как всё сдвинулось
+		}
+	}
+}
+
+// варганим новую фигуру
+func (g *Game) spawnPiece() {
+	g.currentIdx = rand.Intn(len(shapes))
+	g.current = shapes[g.currentIdx]
+	g.posX = W/2 - 1
+	g.posY = 0
+}
+
+func (g *Game) reset() {
+	g.board = [W][H]color.RGBA{}
+	g.gameOver = false
+	g.spawnPiece()
+}
+
+func (g *Game) Draw(screen *ebiten.Image) {
+	// Фон
+	vector.DrawFilledRect(screen, 0, 0, float32(W*S), float32(H*S), color.RGBA{20, 20, 30, 255}, false)
+
+	// Рисуем стакан (сетку)
+	for x := 0; x < W; x++ {
+		for y := 0; y < H; y++ {
+			// Рамка ячейки
+			vector.StrokeRect(screen, float32(x*S), float32(y*S), float32(S), float32(S), 1, color.RGBA{50, 50, 60, 255}, false)
+			
+			// Заполненные ячейки
+			if g.board[x][y].A != 0 {
+				vector.DrawFilledRect(screen, float32(x*S)+1, float32(y*S)+1, float32(S-2), float32(S-2), g.board[x][y], false)
+			}
+		}
+	}
+
+	// варганим активную фигуру
+	if !g.gameOver {
+		c := colors[g.currentIdx]
+		for _, p := range g.current {
+			vector.DrawFilledRect(screen, float32((g.posX+p[0])*S)+1, float32((g.posY+p[1])*S)+1, float32(S-2), float32(S-2), c, false)
+		}
+	} else {
+		// Надпись Game Over
+		//просто мигаем экраном или рисуем прямоугольник
+		vector.DrawFilledRect(screen, 50, 100, float32(W*S-100), 50, color.RGBA{0,0,0,200}, false)
+		// Здесь можно было бы добавить текст, если подключить font package
+	}
+}
+
+func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
+	return W * S, H * S
+}
 
 func main() {
-	ebiten.SetWindowTitle("VANAHEIM TETRIS - CHAMPION EDITION")
+	rand.Seed(42) 
+	ebiten.SetWindowTitle("TETRIS")
 	ebiten.SetWindowSize(W*S*2, H*S*2)
-	game := &Game{posX: 4, current: shapes[rand.Intn(len(shapes))]}
-	if err := ebiten.RunGame(game); err != nil { log.Fatal(err) }
+	
+	game := &Game{}
+	game.reset()
+	
+	if err := ebiten.RunGame(game); err != nil {
+		log.Fatal(err)
+	}
 }
