@@ -17,7 +17,7 @@ const (
 	S = 20 // Размер клетки
 	W = 30 // Ширина поля
 	H = 20 // Высота поля
-	TickRate = 80 * time.Millisecond // Скорость игры
+	TickRate = 200 * time.Millisecond // Скорость игры
 )
 
 type Point struct {
