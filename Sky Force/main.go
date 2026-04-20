@@ -10,13 +10,14 @@ import (
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
-	"github.com/hajimehoshi/ebiten/v2/inpututil" // Добавлено для отслеживания нажатий
+	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"github.com/hajimehoshi/ebiten/v2/vector"
 )
 
 const (
 	W = 400
 	H = 600
+	StarCount = 100 // Количество звезд
 )
 
 type Object struct {
@@ -25,36 +26,76 @@ type Object struct {
 	Life   int
 }
 
+// Структура для звезды
+type Star struct {
+	X, Y   float32
+	Size   float32
+	Speed  float32 // Скорость падения (для параллакса)
+	Bright uint8   // Яркость для мерцания
+}
+
 type Game struct {
 	pX, pY    float32
 	bullets   []Object
 	enemies   []Object
 	particles []Object
+	stars     []Star // Массив звезд
 	timer     int
 	score     int
 	frame     int
-	isPaused  bool // Флаг паузы
+	isPaused  bool
+}
+
+func (g *Game) Init() {
+	g.stars = make([]Star, StarCount)
+	for i := 0; i < StarCount; i++ {
+		g.stars[i] = Star{
+			X:      rand.Float32() * W,
+			Y:      rand.Float32() * H,
+			Size:   rand.Float32()*1.5 + 0.5, // Размер от 0.5 до 2.0
+			Speed:  rand.Float32()*2 + 0.5,   // Скорость от 0.5 до 2.5
+			Bright: uint8(rand.Intn(100) + 155), // Яркость 155-255
+		}
+	}
 }
 
 func (g *Game) Update() error {
 	g.frame++
 
-	// Обработка паузы по нажатию клавиши P или Space
+	// Пауза
 	if inpututil.IsKeyJustPressed(ebiten.KeyP) || inpututil.IsKeyJustPressed(ebiten.KeySpace) {
 		g.isPaused = !g.isPaused
 	}
 
-	// Если пауза активна, пропускаем всю игровую логику
+	// --- ЛОГИКА ЗВЕЗД (работает всегда, даже на паузе, для красоты) ---
+	for i := range g.stars {
+		s := &g.stars[i]
+		// Двигаем звезду вниз
+		s.Y += s.Speed
+		
+		// Если ушла за экран, возвращаем наверх
+		if s.Y > H {
+			s.Y = -5
+			s.X = rand.Float32() * W
+			s.Speed = rand.Float32()*2 + 0.5
+		}
+		
+		// Легкое мерцание
+		if rand.Intn(100) > 95 {
+			s.Bright = uint8(rand.Intn(100) + 155)
+		}
+	}
+
+	// Если пауза, остальную логику игры пропускаем
 	if g.isPaused {
 		return nil
 	}
 
-	// --- ИГРОВАЯ ЛОГИКА (работает только если не пауза) ---
+	// --- ИГРОВАЯ ЛОГИКА ---
 
-	// 1. Управление (плавное следование за мышью)
+	// 1. Управление
 	mx, my := ebiten.CursorPosition()
 	targetX, targetY := float32(mx), float32(my)
-	
 	g.pX += (targetX - g.pX) * 0.2
 	g.pY += (targetY - g.pY) * 0.2
 
@@ -79,7 +120,7 @@ func (g *Game) Update() error {
 		})
 	}
 
-	// 4. Обновление пуль
+	// 4. Пули
 	for i := len(g.bullets) - 1; i >= 0; i-- {
 		g.bullets[i].Y -= 10
 		if g.bullets[i].Y < -10 {
@@ -88,7 +129,7 @@ func (g *Game) Update() error {
 		}
 	}
 
-	// 5. Обновление врагов и коллизии
+	// 5. Враги и коллизии
 	for i := len(g.enemies) - 1; i >= 0; i-- {
 		e := &g.enemies[i]
 		e.Y += e.VY
@@ -130,10 +171,7 @@ func (g *Game) Update() error {
 		}
 	}
 
-	// 6. Частицы (можно оставить обновляться даже на паузе для красоты, или тоже остановить)
-	// Сейчас они останавливаются вместе с игрой, так как код выше не выполняется.
-	// Если хочешь, чтобы частицы долетали, вынеси этот цикл из-под if !g.isPaused
-	
+	// 6. Частицы
 	for i := len(g.particles) - 1; i >= 0; i-- {
 		p := &g.particles[i]
 		p.X += p.VX
@@ -164,11 +202,13 @@ func (g *Game) createExplosion(x, y float32, c color.RGBA) {
 func (g *Game) Draw(screen *ebiten.Image) {
 	screen.Fill(color.RGBA{5, 5, 20, 255})
 
-	// Звезды (статичные или мерцающие, тут простые)
-	for i := 0; i < 50; i++ {
-		x := float32(rand.Intn(W))
-		y := float32(rand.Intn(H))
-		vector.DrawFilledRect(screen, x, y, 1, 1, color.RGBA{100, 100, 150, 100}, false)
+	// --- РИСУЕМ ЗВЕЗДЫ ---
+	for _, s := range g.stars {
+		// Чем быстрее звезда, тем она тусклее (эффект размытия в движении) или наоборот ярче
+		// Здесь сделаем просто белый цвет с разной прозрачностью
+		alpha := s.Bright
+		c := color.RGBA{200, 200, 255, alpha}
+		vector.DrawFilledRect(screen, s.X, s.Y, s.Size, s.Size, c, false)
 	}
 
 	// Пули
@@ -198,10 +238,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	scoreText := fmt.Sprintf("SCORE: %d", g.score)
 	if g.isPaused {
 		scoreText += " | PAUSED"
-		// Затемнение экрана при паузе
 		vector.DrawFilledRect(screen, 0, 0, W, H, color.RGBA{0, 0, 0, 100}, false)
-		
-		// Надпись PAUSED по центру
 		ebitenutil.DebugPrintAt(screen, "PAUSED", W/2-30, H/2)
 		ebitenutil.DebugPrintAt(screen, "Press P to Resume", W/2-50, H/2+20)
 	}
@@ -213,9 +250,13 @@ func (g *Game) Layout(w, h int) (int, int) { return W, H }
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
-	ebiten.SetWindowTitle("SKY FORCE - REPTILOID HUNTER")
+	ebiten.SetWindowTitle("SKY FORCE - PARALLAX STARS")
 	ebiten.SetWindowSize(W, H)
-	if err := ebiten.RunGame(&Game{pX: W / 2, pY: H - 100}); err != nil {
+	
+	game := &Game{pX: W / 2, pY: H - 100}
+	game.Init() // Инициализация звезд
+	
+	if err := ebiten.RunGame(game); err != nil {
 		log.Fatal(err)
 	}
 }
