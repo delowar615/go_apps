@@ -110,7 +110,7 @@ func (g *Game) Update() error {
 		g.isPaused = !g.isPaused
 	}
 
-	// Звезды
+	// Звезды 
 	for i := range g.stars {
 		s := &g.stars[i]
 		s.Y += s.Speed
@@ -132,7 +132,7 @@ func (g *Game) Update() error {
 		g.boss.X = W / 2
 		g.boss.Y = 80
 		g.boss.Dir = 1
-		g.enemies = nil
+		g.enemies = nil // Очищаем врагов при спавне босса
 	}
 
 	if g.boss.Active {
@@ -170,16 +170,12 @@ func (g *Game) Update() error {
 	if g.hasLaserUpgrade && g.laserEnergy > 0 && (mouseBtn || keyBtn) {
 		g.isLaserActive = true
 		g.laserEnergy -= LaserDrainRate
-		if g.laserEnergy < 0 {
-			g.laserEnergy = 0
-		}
+		if g.laserEnergy < 0 { g.laserEnergy = 0 }
 	} else {
 		g.isLaserActive = false
 		if g.laserEnergy < LaserMaxEnergy {
 			g.laserEnergy += LaserRechargeRate
-			if g.laserEnergy > LaserMaxEnergy {
-				g.laserEnergy = LaserMaxEnergy
-			}
+			if g.laserEnergy > LaserMaxEnergy { g.laserEnergy = LaserMaxEnergy }
 		}
 	}
 
@@ -194,29 +190,25 @@ func (g *Game) Update() error {
 		if rand.Intn(600) == 0 {
 			typeRoll := rand.Intn(2)
 			pType := "shield"
-			if typeRoll == 1 {
-				pType = "laser"
-			}
+			if typeRoll == 1 { pType = "laser" }
 			g.powerups = append(g.powerups, PowerUp{
 				X: rand.Float32()*(W-40) + 20, Y: -20, VY: 2, Type: pType,
 			})
 		}
 	}
 
-	// --- ОБНОВЛЕНИЕ ПУЛЬ ---
-	for i := len(g.bullets) - 1; i >= 0; i-- {
-		b := &g.bullets[i]
+	// --- ОБНОВЛЕНИЕ ПУЛЬ (Безопасное удаление) ---
+	newBullets := g.bullets[:0] // Создаем срез той же длины, но пустой
+	for _, b := range g.bullets {
 		b.X += b.VX
 		b.Y += b.VY
 		
+		// Пропускаем пули за экраном
 		if b.Y > H+20 || b.Y < -20 || b.X < -20 || b.X > W+20 {
-			// Проверка на пустой слайс перед удалением
-			if len(g.bullets) > 0 {
-				g.bullets[i] = g.bullets[len(g.bullets)-1]
-				g.bullets = g.bullets[:len(g.bullets)-1]
-			}
 			continue
 		}
+
+		keepBullet := true
 
 		// Пуля игрока vs Босс
 		if g.boss.Active && b.Color.R == 255 && b.Color.G == 255 && b.Color.B == 0 {
@@ -225,21 +217,15 @@ func (g *Game) Update() error {
 			if dx*dx + dy*dy < 2500 {
 				g.boss.HP -= 10
 				g.createExplosion(b.X, b.Y, color.RGBA{255, 255, 0, 255})
-				
-				if len(g.bullets) > 0 {
-					g.bullets[i] = g.bullets[len(g.bullets)-1]
-					g.bullets = g.bullets[:len(g.bullets)-1]
-				}
-				
+				keepBullet = false // Удаляем пулю
 				if g.boss.HP <= 0 {
 					g.killBoss()
 				}
-				continue
 			}
 		}
 		
 		// Пуля босса vs Игрок
-		if b.Color.R == 255 && b.Color.G < 100 { 
+		if keepBullet && b.Color.R == 255 && b.Color.G < 100 { 
 			dx := b.X - g.pX
 			dy := b.Y - g.pY
 			if dx*dx + dy*dy < 400 {
@@ -249,15 +235,16 @@ func (g *Game) Update() error {
 					g.hasShield = false
 					g.createExplosion(g.pX, g.pY, color.RGBA{0, 100, 255, 255})
 				}
-				
-				if len(g.bullets) > 0 {
-					g.bullets[i] = g.bullets[len(g.bullets)-1]
-					g.bullets = g.bullets[:len(g.bullets)-1]
-				}
-				continue
+				keepBullet = false // Удаляем пулю
 			}
 		}
+
+		if keepBullet {
+			newBullets = append(newBullets, b)
+		}
 	}
+	g.bullets = newBullets
+
 
 	// --- ЛАЗЕР VS БОСС ---
 	if g.isLaserActive && g.boss.Active {
@@ -274,24 +261,14 @@ func (g *Game) Update() error {
 		}
 	}
 
-	// --- ОБНОВЛЕНИЕ БОНУСОВ (ЗДЕСЬ ЧАСТО БЫВАЕТ ОШИБКА) ---
-	for i := len(g.powerups) - 1; i >= 0; i-- {
-		// Если слайс уже пуст из-за предыдущих удалений в этом же цикле (редко, но бывает при багах логики)
-		if len(g.powerups) == 0 {
-			break
-		}
-		
-		// Проверяем, что индекс i все еще валиден
-		if i >= len(g.powerups) {
-			continue
-		}
-
-		p := &g.powerups[i]
+	// --- ОБНОВЛЕНИЕ БОНУСОВ (Безопасное удаление) ---
+	newPowerups := g.powerups[:0]
+	for _, p := range g.powerups {
 		p.Y += p.VY
 		dx := p.X - g.pX
 		dy := p.Y - g.pY
 		
-		// Подбор бонуса
+		// Подбор
 		if dx*dx + dy*dy < 900 {
 			if p.Type == "shield" {
 				g.hasShield = true
@@ -301,23 +278,18 @@ func (g *Game) Update() error {
 				g.laserEnergy = LaserMaxEnergy
 			}
 			g.createExplosion(g.pX, g.pY, color.RGBA{0, 255, 255, 255})
-			
-			// Безопасное удаление
-			if len(g.powerups) > 0 {
-				g.powerups[i] = g.powerups[len(g.powerups)-1]
-				g.powerups = g.powerups[:len(g.powerups)-1]
-			}
-			continue
+			continue // Не добавляем в newPowerups (удаляем)
 		}
 		
 		// Улет за экран
 		if p.Y > H+20 {
-			if len(g.powerups) > 0 {
-				g.powerups[i] = g.powerups[len(g.powerups)-1]
-				g.powerups = g.powerups[:len(g.powerups)-1]
-			}
+			continue // Не добавляем (удаляем)
 		}
+		
+		newPowerups = append(newPowerups, p)
 	}
+	g.powerups = newPowerups
+
 
 	// --- ИГРОК ---
 	mx, my := ebiten.CursorPosition()
@@ -335,14 +307,9 @@ func (g *Game) Update() error {
 		g.timer = 0
 	}
 
-	// --- ВРАГИ ---
-	for i := len(g.enemies) - 1; i >= 0; i-- {
-		// Защита от выхода за границы
-		if i >= len(g.enemies) {
-			continue
-		}
-		
-		e := &g.enemies[i]
+	// --- ВРАГИ (Безопасное удаление) ---
+	newEnemies := g.enemies[:0]
+	for _, e := range g.enemies {
 		e.Y += e.VY
 
 		// Столкновение с игроком
@@ -351,11 +318,7 @@ func (g *Game) Update() error {
 		if dx*dx + dy*dy < 900 {
 			if g.hasShield {
 				g.createExplosion(e.X, e.Y, color.RGBA{255, 50, 50, 255})
-				if len(g.enemies) > 0 {
-					g.enemies[i] = g.enemies[len(g.enemies)-1]
-					g.enemies = g.enemies[:len(g.enemies)-1]
-				}
-				continue
+				continue // Удаляем врага
 			} else {
 				g.gameOverReset()
 				continue
@@ -364,18 +327,17 @@ func (g *Game) Update() error {
 
 		// Столкновение с пулями игрока
 		hit := false
-		for j := len(g.bullets) - 1; j >= 0; j-- {
-			b := &g.bullets[j]
+		
+		for j, b := range g.bullets {
 			if b.Color.R == 255 && b.Color.G == 255 && b.Color.B == 0 { 
 				bdx := e.X - b.X
 				bdy := e.Y - b.Y
 				if bdx*bdx + bdy*bdy < 400 {
 					g.createExplosion(e.X, e.Y, color.RGBA{255, 50, 50, 255})
 					
-					if len(g.bullets) > 0 {
-						g.bullets[j] = g.bullets[len(g.bullets)-1]
-						g.bullets = g.bullets[:len(g.bullets)-1]
-					}
+					// Удаляем пулю из основного слайса
+
+					g.bullets[j].Y = -999 
 					
 					hit = true
 					g.score += 100
@@ -385,36 +347,28 @@ func (g *Game) Update() error {
 		}
 		
 		if hit {
-			if len(g.enemies) > 0 {
-				g.enemies[i] = g.enemies[len(g.enemies)-1]
-				g.enemies = g.enemies[:len(g.enemies)-1]
-			}
-			continue
+			continue // Удаляем врага
 		}
 		
 		if e.Y > H+20 {
-			if len(g.enemies) > 0 {
-				g.enemies[i] = g.enemies[len(g.enemies)-1]
-				g.enemies = g.enemies[:len(g.enemies)-1]
-			}
+			continue // Удаляем врага
 		}
-	}
-
-	// Частицы
-	for i := len(g.particles) - 1; i >= 0; i-- {
-		if i >= len(g.particles) { continue }
 		
-		p := &g.particles[i]
+		newEnemies = append(newEnemies, e)
+	}
+	g.enemies = newEnemies
+
+	// Частицы (Безопасное удаление)
+	newParticles := g.particles[:0]
+	for _, p := range g.particles {
 		p.X += p.VX
 		p.Y += p.VY
 		p.Life--
-		if p.Life <= 0 {
-			if len(g.particles) > 0 {
-				g.particles[i] = g.particles[len(g.particles)-1]
-				g.particles = g.particles[:len(g.particles)-1]
-			}
+		if p.Life > 0 {
+			newParticles = append(newParticles, p)
 		}
 	}
+	g.particles = newParticles
 
 	return nil
 }
@@ -525,7 +479,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		var barHeight float32 = 6.0
 		ratio := float32(g.laserEnergy) / float32(LaserMaxEnergy)
 		
-		// ИСПРАВЛЕНО: определяем цвет через RGBA
+		// определяем цвет через RGBA
 		var barColor color.RGBA
 		if g.isLaserActive {
 			barColor = color.RGBA{255, 255, 255, 255} // White
