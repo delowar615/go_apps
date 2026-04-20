@@ -18,7 +18,15 @@ const (
 	W = 400
 	H = 600
 	StarCount = 100
-	ShieldDuration = 300 // 5 секунд при 60 FPS
+	
+	// Настройки щита
+	ShieldDuration = 300 // 5 сек при 60 FPS
+	
+	// Настройки лазера
+	LaserMaxEnergy = 180 // 3 секунды энергии (60 * 3)
+	LaserRechargeRate = 12 // Скорость восстановления (полная зарядка за ~15 сек)
+	LaserDrainRate = 3     // Скорость траты энергии
+	LaserWidth = 10        // Базовая ширина луча
 )
 
 type Object struct {
@@ -34,12 +42,11 @@ type Star struct {
 	Bright uint8
 }
 
-// Бонус (Щит)
 type PowerUp struct {
-	X, Y  float32
-	VY    float32
-	Active bool
-	Type  string // "shield"
+	X, Y     float32
+	VY       float32
+	Active   bool
+	Type     string // "shield" или "laser"
 }
 
 type Game struct {
@@ -48,16 +55,21 @@ type Game struct {
 	enemies   []Object
 	particles []Object
 	stars     []Star
-	powerups  []PowerUp // Список активных бонусов
+	powerups  []PowerUp
 	
 	timer     int
 	score     int
 	frame     int
 	isPaused  bool
 	
-	// Механика щита
+	// Щит
 	hasShield   bool
 	shieldTimer int
+	
+	// Лазер
+	laserEnergy   int   // Текущая энергия (0 - LaserMaxEnergy)
+	isLaserActive bool  // Активен ли луч прямо сейчас
+	hasLaserUpgrade bool // Есть ли вообще улучшение лазера
 }
 
 func (g *Game) Init() {
@@ -72,13 +84,15 @@ func (g *Game) Init() {
 		}
 	}
 	g.powerups = []PowerUp{}
+	g.laserEnergy = LaserMaxEnergy // Начинаем с полным зарядом для теста, или 0
+	g.hasLaserUpgrade = true // Для теста сразу дадим лазер, или можно спавнить бонус
 }
 
 func (g *Game) Update() error {
 	g.frame++
 
-	// Пауза
-	if inpututil.IsKeyJustPressed(ebiten.KeyP) || inpututil.IsKeyJustPressed(ebiten.KeySpace) {
+	// Пауза (P или Esc)
+	if inpututil.IsKeyJustPressed(ebiten.KeyP) || inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
 		g.isPaused = !g.isPaused
 	}
 
@@ -104,15 +118,37 @@ func (g *Game) Update() error {
 		}
 	}
 
+	// --- УПРАВЛЕНИЕ ЛАЗЕРОМ ---
+	// Лазер работает, если есть энергия И игрок держит кнопку (ЛКМ или Пробел)
+	mouseBtn := ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft)
+	keyBtn := ebiten.IsKeyPressed(ebiten.KeySpace)
+	
+	if g.hasLaserUpgrade && g.laserEnergy > 0 && (mouseBtn || keyBtn) {
+		g.isLaserActive = true
+		g.laserEnergy -= LaserDrainRate
+		if g.laserEnergy < 0 { g.laserEnergy = 0 }
+	} else {
+		g.isLaserActive = false
+		// Перезарядка
+		if g.laserEnergy < LaserMaxEnergy {
+			g.laserEnergy += LaserRechargeRate
+			if g.laserEnergy > LaserMaxEnergy { g.laserEnergy = LaserMaxEnergy }
+		}
+	}
+
 	// --- СПАВН БОНУСОВ ---
-	// Шанс 1 к 1000 каждый кадр (примерно раз в 15-20 секунд)
-	if rand.Intn(1000) == 0 {
+	// Шанс спавна бонуса (раз в ~10-15 секунд)
+	if rand.Intn(600) == 0 {
+		typeRoll := rand.Intn(2)
+		pType := "shield"
+		if typeRoll == 1 { pType = "laser" }
+		
 		g.powerups = append(g.powerups, PowerUp{
 			X: rand.Float32()*(W-40) + 20,
 			Y: -20,
 			VY: 2,
 			Active: true,
-			Type: "shield",
+			Type: pType,
 		})
 	}
 
@@ -121,24 +157,26 @@ func (g *Game) Update() error {
 		p := &g.powerups[i]
 		p.Y += p.VY
 		
-		// Проверка подбора бонуса игроком
 		dx := p.X - g.pX
 		dy := p.Y - g.pY
 		dist := dx*dx + dy*dy
 		
-		if dist < 900 { // Радиус 30 (как у игрока)
+		if dist < 900 { // Подбор
 			if p.Type == "shield" {
 				g.hasShield = true
 				g.shieldTimer = ShieldDuration
-				g.createExplosion(g.pX, g.pY, color.RGBA{0, 100, 255, 255}) // Эффект получения
+				g.createExplosion(g.pX, g.pY, color.RGBA{0, 100, 255, 255})
+			} else if p.Type == "laser" {
+				g.hasLaserUpgrade = true
+				g.laserEnergy = LaserMaxEnergy // Полная зарядка при подборе
+				g.createExplosion(g.pX, g.pY, color.RGBA{0, 255, 255, 255})
 			}
-			// Удаляем бонус
+			
 			g.powerups[i] = g.powerups[len(g.powerups)-1]
 			g.powerups = g.powerups[:len(g.powerups)-1]
 			continue
 		}
 
-		// Удаление если улетел за экран
 		if p.Y > H+20 {
 			g.powerups[i] = g.powerups[len(g.powerups)-1]
 			g.powerups = g.powerups[:len(g.powerups)-1]
@@ -147,7 +185,7 @@ func (g *Game) Update() error {
 
 	// --- ИГРОВАЯ ЛОГИКА ---
 
-	// 1. Управление
+	// 1. Управление кораблем
 	mx, my := ebiten.CursorPosition()
 	targetX, targetY := float32(mx), float32(my)
 	g.pX += (targetX - g.pX) * 0.2
@@ -158,7 +196,8 @@ func (g *Game) Update() error {
 	if g.pY < 0 { g.pY = 0 }
 	if g.pY > H { g.pY = H }
 
-	// 2. Стрельба
+	// 2. Стрельба обычными пулями (автоматическая)
+	// Если лазер активен, обычные пули можно отключить или оставить. Оставим для плотности огня.
 	g.timer++
 	if g.timer > 10 {
 		g.bullets = append(g.bullets, Object{X: g.pX, Y: g.pY - 20})
@@ -174,7 +213,7 @@ func (g *Game) Update() error {
 		})
 	}
 
-	// 4. Пули
+	// 4. Обновление пуль
 	for i := len(g.bullets) - 1; i >= 0; i-- {
 		g.bullets[i].Y -= 10
 		if g.bullets[i].Y < -10 {
@@ -184,6 +223,24 @@ func (g *Game) Update() error {
 	}
 
 	// 5. Враги и коллизии
+	// Сначала проверяем ЛАЗЕР, так как он приоритетнее (мгновенное убийство)
+	if g.isLaserActive {
+		laserLeft := g.pX - float32(LaserWidth)/2
+		laserRight := g.pX + float32(LaserWidth)/2
+		
+		for i := len(g.enemies) - 1; i >= 0; i-- {
+			e := &g.enemies[i]
+			// Простая проверка: центр врага внутри ширины лазера
+			if e.X > laserLeft && e.X < laserRight {
+				g.createExplosion(e.X, e.Y, color.RGBA{0, 255, 255, 255}) // Циановый взрыв
+				g.score += 50 // Меньше очков за лазер, так как легко
+				g.enemies[i] = g.enemies[len(g.enemies)-1]
+				g.enemies = g.enemies[:len(g.enemies)-1]
+			}
+		}
+	}
+
+	// Затем обычные столкновения
 	for i := len(g.enemies) - 1; i >= 0; i-- {
 		e := &g.enemies[i]
 		e.Y += e.VY
@@ -195,16 +252,11 @@ func (g *Game) Update() error {
 		// Столкновение с игроком
 		if distPlayer < 900 {
 			if g.hasShield {
-				// Щит активен: уничтожаем врага, щит остается (или можно отнимать время)
 				g.createExplosion(e.X, e.Y, color.RGBA{255, 50, 50, 255})
 				g.enemies[i] = g.enemies[len(g.enemies)-1]
 				g.enemies = g.enemies[:len(g.enemies)-1]
-				
-				// Опционально: щит мигает или тратится. 
-				// Давай сделаем так: щит защищает бесконечно долго по времени, но визуально видно.
 				continue 
 			} else {
-				// Щита нет: Game Over / Сброс очков
 				g.createExplosion(g.pX, g.pY, color.RGBA{0, 255, 150, 255})
 				g.score = 0
 				g.enemies = nil
@@ -278,11 +330,31 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		vector.DrawFilledRect(screen, s.X, s.Y, s.Size, s.Size, c, false)
 	}
 
-	// Бонусы (Щиты)
+	// --- РИСУЕМ ЛАЗЕР (ЕСЛИ АКТИВЕН) ---
+	if g.isLaserActive {
+		// Эффект дрожания ширины
+		jitter := float32(rand.Intn(3)) - 1.5 // от -1.5 до 1.5
+		currentWidth := float32(LaserWidth) + jitter
+		
+		// 1. Аура (Широкая, полупрозрачная, бирюзовая)
+		auraWidth := currentWidth * 3.0
+		auraColor := color.RGBA{0, 255, 255, 100} // Cyan transparent
+		vector.DrawFilledRect(screen, g.pX - auraWidth/2, 0, auraWidth, float32(H), auraColor, false)
+		
+		// 2. Основной луч (Белый, каленый)
+		coreColor := color.RGBA{255, 255, 255, 255}
+		vector.DrawFilledRect(screen, g.pX - currentWidth/2, 0, currentWidth, float32(H), coreColor, false)
+	}
+
+	// Бонусы
 	for _, p := range g.powerups {
 		if p.Type == "shield" {
 			vector.DrawFilledCircle(screen, p.X, p.Y, 10, color.RGBA{0, 100, 255, 255}, false)
 			vector.StrokeCircle(screen, p.X, p.Y, 14, 2, color.RGBA{0, 200, 255, 255}, false)
+		} else if p.Type == "laser" {
+			// Иконка лазера (молния или кристалл)
+			vector.DrawFilledRect(screen, p.X-5, p.Y-10, 10, 20, color.RGBA{0, 255, 255, 255}, false)
+			vector.StrokeRect(screen, p.X-7, p.Y-12, 14, 24, 2, color.White, false)
 		}
 	}
 
@@ -301,20 +373,36 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	// Игрок
 	playerColor := color.RGBA{0, 255, 150, 255}
 	
-	// Если есть щит, рисуем защитное поле и бар
+	// Щит
 	if g.hasShield {
-		// Прозрачный синий круг вокруг игрока
 		vector.StrokeCircle(screen, g.pX, g.pY, 25, 3, color.RGBA{0, 150, 255, 200}, false)
 		
-		// --- ИСПРАВЛЕНИЕ ТИПОВ ---
 		var barWidth float32 = 40.0
 		var barHeight float32 = 4.0
 		ratio := float32(g.shieldTimer) / float32(ShieldDuration)
 		
-		// Фон бара (серый)
 		vector.DrawFilledRect(screen, g.pX - barWidth/2, g.pY - 35, barWidth, barHeight, color.RGBA{50, 50, 50, 200}, false)
-		// Заполнение бара (синее)
 		vector.DrawFilledRect(screen, g.pX - barWidth/2, g.pY - 35, barWidth*ratio, barHeight, color.RGBA{0, 200, 255, 255}, false)
+	}
+
+	// Энергия Лазера (UI под игроком)
+	if g.hasLaserUpgrade {
+		var barWidth float32 = 60.0
+		var barHeight float32 = 6.0
+		ratio := float32(g.laserEnergy) / float32(LaserMaxEnergy)
+		
+		// Фон бара энергии
+		vector.DrawFilledRect(screen, g.pX - barWidth/2, g.pY + 25, barWidth, barHeight, color.RGBA{50, 50, 50, 200}, false)
+		
+		// Цвет бара зависит от состояния
+		barColor := color.RGBA{0, 255, 255, 255} // Cyan
+		if g.isLaserActive {
+			barColor = color.RGBA{255, 255, 255, 255} // White hot when firing
+		} else if ratio < 0.2 {
+			barColor = color.RGBA{255, 50, 50, 255} // Red if low
+		}
+		
+		vector.DrawFilledRect(screen, g.pX - barWidth/2, g.pY + 25, barWidth*ratio, barHeight, barColor, false)
 	}
 
 	vector.DrawFilledCircle(screen, g.pX, g.pY, 15, playerColor, false)
@@ -337,14 +425,20 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	}
 	
 	ebitenutil.DebugPrintAt(screen, scoreText, 10, 10)
-	ebitenutil.DebugPrintAt(screen, "Collect Blue Orbs for Shield!", 10, 30)
+	
+	// Подсказки
+	if !g.hasLaserUpgrade {
+		ebitenutil.DebugPrintAt(screen, "Find Laser Upgrade!", 10, 30)
+	} else {
+		ebitenutil.DebugPrintAt(screen, "Hold LMB/Space for LASER", 10, 30)
+	}
 }
 
 func (g *Game) Layout(w, h int) (int, int) { return W, H }
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
-	ebiten.SetWindowTitle("SKY FORCE - SHIELD UPDATE")
+	ebiten.SetWindowTitle("SKY FORCE - LASER BEAM")
 	ebiten.SetWindowSize(W, H)
 	
 	game := &Game{pX: W / 2, pY: H - 100}
