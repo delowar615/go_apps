@@ -17,7 +17,8 @@ import (
 const (
 	W = 400
 	H = 600
-	StarCount = 100 // Количество звезд
+	StarCount = 100
+	ShieldDuration = 300 // 5 секунд при 60 FPS
 )
 
 type Object struct {
@@ -26,12 +27,19 @@ type Object struct {
 	Life   int
 }
 
-// Структура для звезды
 type Star struct {
 	X, Y   float32
 	Size   float32
-	Speed  float32 // Скорость падения (для параллакса)
-	Bright uint8   // Яркость для мерцания
+	Speed  float32
+	Bright uint8
+}
+
+// Бонус (Щит)
+type PowerUp struct {
+	X, Y  float32
+	VY    float32
+	Active bool
+	Type  string // "shield"
 }
 
 type Game struct {
@@ -39,11 +47,17 @@ type Game struct {
 	bullets   []Object
 	enemies   []Object
 	particles []Object
-	stars     []Star // Массив звезд
+	stars     []Star
+	powerups  []PowerUp // Список активных бонусов
+	
 	timer     int
 	score     int
 	frame     int
 	isPaused  bool
+	
+	// Механика щита
+	hasShield   bool
+	shieldTimer int
 }
 
 func (g *Game) Init() {
@@ -52,11 +66,12 @@ func (g *Game) Init() {
 		g.stars[i] = Star{
 			X:      rand.Float32() * W,
 			Y:      rand.Float32() * H,
-			Size:   rand.Float32()*1.5 + 0.5, // Размер от 0.5 до 2.0
-			Speed:  rand.Float32()*2 + 0.5,   // Скорость от 0.5 до 2.5
-			Bright: uint8(rand.Intn(100) + 155), // Яркость 155-255
+			Size:   rand.Float32()*1.5 + 0.5,
+			Speed:  rand.Float32()*2 + 0.5,
+			Bright: uint8(rand.Intn(100) + 155),
 		}
 	}
+	g.powerups = []PowerUp{}
 }
 
 func (g *Game) Update() error {
@@ -67,28 +82,67 @@ func (g *Game) Update() error {
 		g.isPaused = !g.isPaused
 	}
 
-	// --- ЛОГИКА ЗВЕЗД (работает всегда, даже на паузе, для красоты) ---
+	// --- ЛОГИКА ЗВЕЗД ---
 	for i := range g.stars {
 		s := &g.stars[i]
-		// Двигаем звезду вниз
 		s.Y += s.Speed
-		
-		// Если ушла за экран, возвращаем наверх
 		if s.Y > H {
 			s.Y = -5
 			s.X = rand.Float32() * W
-			s.Speed = rand.Float32()*2 + 0.5
-		}
-		
-		// Легкое мерцание
-		if rand.Intn(100) > 95 {
-			s.Bright = uint8(rand.Intn(100) + 155)
 		}
 	}
 
-	// Если пауза, остальную логику игры пропускаем
 	if g.isPaused {
 		return nil
+	}
+
+	// --- ТАЙМЕР ЩИТА ---
+	if g.hasShield {
+		g.shieldTimer--
+		if g.shieldTimer <= 0 {
+			g.hasShield = false
+		}
+	}
+
+	// --- СПАВН БОНУСОВ ---
+	// Шанс 1 к 1000 каждый кадр (примерно раз в 15-20 секунд)
+	if rand.Intn(1000) == 0 {
+		g.powerups = append(g.powerups, PowerUp{
+			X: rand.Float32()*(W-40) + 20,
+			Y: -20,
+			VY: 2,
+			Active: true,
+			Type: "shield",
+		})
+	}
+
+	// --- ОБНОВЛЕНИЕ БОНУСОВ ---
+	for i := len(g.powerups) - 1; i >= 0; i-- {
+		p := &g.powerups[i]
+		p.Y += p.VY
+		
+		// Проверка подбора бонуса игроком
+		dx := p.X - g.pX
+		dy := p.Y - g.pY
+		dist := dx*dx + dy*dy
+		
+		if dist < 900 { // Радиус 30 (как у игрока)
+			if p.Type == "shield" {
+				g.hasShield = true
+				g.shieldTimer = ShieldDuration
+				g.createExplosion(g.pX, g.pY, color.RGBA{0, 100, 255, 255}) // Эффект получения
+			}
+			// Удаляем бонус
+			g.powerups[i] = g.powerups[len(g.powerups)-1]
+			g.powerups = g.powerups[:len(g.powerups)-1]
+			continue
+		}
+
+		// Удаление если улетел за экран
+		if p.Y > H+20 {
+			g.powerups[i] = g.powerups[len(g.powerups)-1]
+			g.powerups = g.powerups[:len(g.powerups)-1]
+		}
 	}
 
 	// --- ИГРОВАЯ ЛОГИКА ---
@@ -136,14 +190,30 @@ func (g *Game) Update() error {
 
 		dx := e.X - g.pX
 		dy := e.Y - g.pY
-		if dx*dx+dy*dy < 900 {
-			g.createExplosion(g.pX, g.pY, color.RGBA{0, 255, 150, 255})
-			g.score = 0
-			g.enemies = nil
-			g.bullets = nil
-			continue
+		distPlayer := dx*dx + dy*dy
+
+		// Столкновение с игроком
+		if distPlayer < 900 {
+			if g.hasShield {
+				// Щит активен: уничтожаем врага, щит остается (или можно отнимать время)
+				g.createExplosion(e.X, e.Y, color.RGBA{255, 50, 50, 255})
+				g.enemies[i] = g.enemies[len(g.enemies)-1]
+				g.enemies = g.enemies[:len(g.enemies)-1]
+				
+				// Опционально: щит мигает или тратится. 
+				// Давай сделаем так: щит защищает бесконечно долго по времени, но визуально видно.
+				continue 
+			} else {
+				// Щита нет: Game Over / Сброс очков
+				g.createExplosion(g.pX, g.pY, color.RGBA{0, 255, 150, 255})
+				g.score = 0
+				g.enemies = nil
+				g.bullets = nil
+				continue
+			}
 		}
 
+		// Столкновение с пулями
 		hit := false
 		for j := len(g.bullets) - 1; j >= 0; j-- {
 			b := &g.bullets[j]
@@ -202,13 +272,18 @@ func (g *Game) createExplosion(x, y float32, c color.RGBA) {
 func (g *Game) Draw(screen *ebiten.Image) {
 	screen.Fill(color.RGBA{5, 5, 20, 255})
 
-	// --- РИСУЕМ ЗВЕЗДЫ ---
+	// Звезды
 	for _, s := range g.stars {
-		// Чем быстрее звезда, тем она тусклее (эффект размытия в движении) или наоборот ярче
-		// Здесь сделаем просто белый цвет с разной прозрачностью
-		alpha := s.Bright
-		c := color.RGBA{200, 200, 255, alpha}
+		c := color.RGBA{200, 200, 255, s.Bright}
 		vector.DrawFilledRect(screen, s.X, s.Y, s.Size, s.Size, c, false)
+	}
+
+	// Бонусы (Щиты)
+	for _, p := range g.powerups {
+		if p.Type == "shield" {
+			vector.DrawFilledCircle(screen, p.X, p.Y, 10, color.RGBA{0, 100, 255, 255}, false)
+			vector.StrokeCircle(screen, p.X, p.Y, 14, 2, color.RGBA{0, 200, 255, 255}, false)
+		}
 	}
 
 	// Пули
@@ -224,7 +299,25 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	}
 
 	// Игрок
-	vector.DrawFilledCircle(screen, g.pX, g.pY, 15, color.RGBA{0, 255, 150, 255}, false)
+	playerColor := color.RGBA{0, 255, 150, 255}
+	
+	// Если есть щит, рисуем защитное поле и бар
+	if g.hasShield {
+		// Прозрачный синий круг вокруг игрока
+		vector.StrokeCircle(screen, g.pX, g.pY, 25, 3, color.RGBA{0, 150, 255, 200}, false)
+		
+		// --- ИСПРАВЛЕНИЕ ТИПОВ ---
+		var barWidth float32 = 40.0
+		var barHeight float32 = 4.0
+		ratio := float32(g.shieldTimer) / float32(ShieldDuration)
+		
+		// Фон бара (серый)
+		vector.DrawFilledRect(screen, g.pX - barWidth/2, g.pY - 35, barWidth, barHeight, color.RGBA{50, 50, 50, 200}, false)
+		// Заполнение бара (синее)
+		vector.DrawFilledRect(screen, g.pX - barWidth/2, g.pY - 35, barWidth*ratio, barHeight, color.RGBA{0, 200, 255, 255}, false)
+	}
+
+	vector.DrawFilledCircle(screen, g.pX, g.pY, 15, playerColor, false)
 	vector.DrawFilledRect(screen, g.pX-4, g.pY+10, 8, 10, color.RGBA{0, 100, 255, 200}, false)
 
 	// Частицы
@@ -244,17 +337,18 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	}
 	
 	ebitenutil.DebugPrintAt(screen, scoreText, 10, 10)
+	ebitenutil.DebugPrintAt(screen, "Collect Blue Orbs for Shield!", 10, 30)
 }
 
 func (g *Game) Layout(w, h int) (int, int) { return W, H }
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
-	ebiten.SetWindowTitle("SKY FORCE - PARALLAX STARS")
+	ebiten.SetWindowTitle("SKY FORCE - SHIELD UPDATE")
 	ebiten.SetWindowSize(W, H)
 	
 	game := &Game{pX: W / 2, pY: H - 100}
-	game.Init() // Инициализация звезд
+	game.Init()
 	
 	if err := ebiten.RunGame(game); err != nil {
 		log.Fatal(err)
